@@ -1,5 +1,6 @@
 import type {
   AuthInfo as OAuthAuthInfo,
+  JSONRPCMessage,
   OAuthMetadata,
   OAuthTokenVerifier,
 } from "@modelcontextprotocol/server";
@@ -221,17 +222,34 @@ export type OAuthMetadataSource =
   | ((resource: URL) => OAuthMetadata);
 
 /**
- * Options for {@link oauthCustomProvider}.
+ * Result of a custom request-admission decision.
  *
- * @typeParam TUser - Application user type exposed to authenticated callbacks.
- * @typeParam TMetadata - Static metadata (the default), or a metadata function.
+ * Return a `Response` to short-circuit the request. Return `undefined` to
+ * allow an unauthenticated request when the server's MCP security policy
+ * permits it. Otherwise return the bearer and its verified authentication
+ * information; mcp-use validates and maps that information before callbacks
+ * receive it.
  */
-export interface CustomOAuthProviderOptions<
+export type OAuthAdmissionResult =
+  | Response
+  | { bearer: string; authInfo: OAuthAuthInfo }
+  | undefined;
+
+/**
+ * Request-level admission hook for OAuth adapters that already own bearer
+ * verification. It runs for requests to the MCP endpoint for both `fetch`
+ * and `listen()`, after JSON parsing and before MCP dispatch.
+ */
+export type OAuthAdmissionHook = (
+  request: Request,
+  messages: JSONRPCMessage[]
+) => Promise<OAuthAdmissionResult>;
+
+/** Common options for {@link oauthCustomProvider}. */
+interface CustomOAuthProviderBaseOptions<
   TUser,
   TMetadata extends OAuthMetadataSource = OAuthMetadata,
 > extends OAuthResourceOptions {
-  /** Creates a verifier bound to the resolved canonical MCP resource. */
-  createTokenVerifier: (resource: URL) => OAuthTokenVerifier;
   /**
    * RFC 8414 metadata for the authorization server. Pass a function when the
    * metadata depends on the canonical MCP resource, for example when the
@@ -240,7 +258,7 @@ export interface CustomOAuthProviderOptions<
    * `https` issuer (or `http` on localhost) in the result.
    */
   oauthMetadata: TMetadata;
-  /** Maps verified SDK auth information into mcp-use callback identity data. */
+  /** Maps admitted SDK auth information into mcp-use callback identity data. */
   mapAuthInfo: (authInfo: OAuthAuthInfo) => OAuthExtra<TUser>;
   /**
    * Optional hook invoked once while the server mounts. Providers use it to
@@ -253,6 +271,33 @@ export interface CustomOAuthProviderOptions<
    */
   setup?: (host: OAuthProviderHost<TUser>) => void;
 }
+
+/**
+ * Options for {@link oauthCustomProvider}.
+ *
+ * Supply either a token verifier, or an `admit` hook when an external adapter
+ * owns request authentication. Existing verifier-based providers remain
+ * compatible.
+ *
+ * @typeParam TUser - Application user type exposed to authenticated callbacks.
+ * @typeParam TMetadata - Static metadata (the default), or a metadata function.
+ */
+export type CustomOAuthProviderOptions<
+  TUser,
+  TMetadata extends OAuthMetadataSource = OAuthMetadata,
+> = CustomOAuthProviderBaseOptions<TUser, TMetadata> &
+  (
+    | {
+        /** Creates a verifier bound to the resolved canonical MCP resource. */
+        createTokenVerifier: (resource: URL) => OAuthTokenVerifier;
+        admit?: OAuthAdmissionHook;
+      }
+    | {
+        createTokenVerifier?: never;
+        /** Handles request admission without replacing server.fetch or listen. */
+        admit: OAuthAdmissionHook;
+      }
+  );
 
 /**
  * OAuth resource-server provider accepted by the mcp-use server constructor.
@@ -298,12 +343,21 @@ export function oauthCustomProvider<
   if (
     options === null ||
     typeof options !== "object" ||
-    typeof options.createTokenVerifier !== "function" ||
+    (typeof options.createTokenVerifier !== "function" &&
+      typeof options.admit !== "function") ||
     typeof options.mapAuthInfo !== "function"
   ) {
     throw new TypeError(
-      "oauthCustomProvider requires createTokenVerifier, oauthMetadata, and mapAuthInfo"
+      "oauthCustomProvider requires createTokenVerifier or admit, plus oauthMetadata and mapAuthInfo"
     );
+  }
+
+  if (options.createTokenVerifier !== undefined && typeof options.createTokenVerifier !== "function") {
+    throw new TypeError("createTokenVerifier must be a function when provided");
+  }
+
+  if (options.admit !== undefined && typeof options.admit !== "function") {
+    throw new TypeError("admit must be a function when provided");
   }
 
   if (options.setup !== undefined && typeof options.setup !== "function") {
@@ -336,7 +390,10 @@ export function oauthCustomProvider<
   }
 
   const provider: OAuthProvider<TUser, TMetadata> = {
-    createTokenVerifier: options.createTokenVerifier,
+    ...(options.createTokenVerifier !== undefined && {
+      createTokenVerifier: options.createTokenVerifier,
+    }),
+    ...(options.admit !== undefined && { admit: options.admit }),
     oauthMetadata: options.oauthMetadata,
     mapAuthInfo: options.mapAuthInfo,
     ...(options.setup !== undefined && { setup: options.setup }),

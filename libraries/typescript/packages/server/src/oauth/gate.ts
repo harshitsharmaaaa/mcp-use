@@ -5,6 +5,7 @@ import {
   bearerAuthChallengeResponse,
   verifyBearerToken,
   type AuthInfo,
+  type JSONRPCMessage,
   type OAuthTokenVerifier,
 } from "@modelcontextprotocol/server";
 
@@ -21,8 +22,16 @@ import { requiresSignIn, schemeScopes } from "./policy.js";
 
 /** @internal Options for {@link createOAuthGate}. */
 export interface OAuthGateOptions {
-  /** Verifier bound to the canonical MCP resource. */
-  verifier: OAuthTokenVerifier;
+  /** Verifier bound to the canonical MCP resource (the default path). */
+  verifier?: OAuthTokenVerifier;
+  /**
+   * Optional already-mapped admission hook. Returning undefined permits
+   * unauthenticated continuation only when the MCP policy allows it.
+   */
+  admit?: (
+    request: Request,
+    messages: JSONRPCMessage[]
+  ) => Promise<Response | AuthInfo | undefined>;
   /** RFC 9728 metadata URL advertised in every challenge. */
   resourceMetadataUrl: string;
   /** Provider `requiredScopes`, enforced on every sign-in request. */
@@ -144,6 +153,7 @@ function isSignInMethod(message: ParsedMessage): boolean {
 export function createOAuthGate(options: OAuthGateOptions): FetchMiddleware {
   const {
     verifier,
+    admit,
     resourceMetadataUrl,
     baselineScopes,
     mixedAuth,
@@ -248,7 +258,26 @@ export function createOAuthGate(options: OAuthGateOptions): FetchMiddleware {
 
     let authInfo: AuthInfo | undefined;
     const authorization = request.headers.get("authorization");
-    if (authorization !== null || requirement.required) {
+    if (admit) {
+      const messages = (
+        Array.isArray(body) ? body : body === undefined ? [] : [body]
+      ) as JSONRPCMessage[];
+      try {
+        const result = await admit(request, messages);
+        if (result instanceof Response) return result;
+        authInfo = result;
+      } catch (error) {
+        return bearerAuthChallengeResponse(error, { resourceMetadataUrl });
+      }
+      if (requirement.required && authInfo === undefined) {
+        return authorization === null
+          ? refuse(request, message, "missing_token", requirement)
+          : refuse(request, message, "invalid_token", requirement);
+      }
+    } else if (authorization !== null || requirement.required) {
+      if (verifier === undefined) {
+        throw new Error("OAuth gate requires either a verifier or an admission hook");
+      }
       try {
         authInfo = await verifyBearerToken(authorization, { verifier });
       } catch (error) {

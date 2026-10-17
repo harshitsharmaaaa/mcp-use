@@ -91,6 +91,11 @@ export function wrapOAuthTokenVerifier<TUser>(
   provider: OAuthProvider<TUser, OAuthMetadataSource>,
   expectedResource: URL
 ): OAuthTokenVerifier {
+  if (typeof provider.createTokenVerifier !== "function") {
+    throw new TypeError(
+      "OAuth provider must define createTokenVerifier when no admit hook is used"
+    );
+  }
   const canonicalResource = normalizeResourceUrl(expectedResource);
   const tokenVerifier = provider.createTokenVerifier(
     new URL(canonicalResource.href)
@@ -108,23 +113,56 @@ export function wrapOAuthTokenVerifier<TUser>(
   return {
     async verifyAccessToken(token: string): Promise<AuthInfo> {
       const authInfo = await tokenVerifier.verifyAccessToken(token);
-      assertVerifiedAuthInfo(authInfo);
-      assertResourceBinding(authInfo, canonicalResource);
-
-      let mapped: OAuthExtra<TUser>;
-      try {
-        mapped = provider.mapAuthInfo(authInfo);
-      } catch (error) {
-        throw invalidToken("Token identity mapping failed", error);
-      }
-      assertMappedExtra(mapped);
-
-      return {
-        ...authInfo,
-        scopes: [...authInfo.scopes],
-        extra: { ...authInfo.extra, ...mapped },
-      };
+      return mapVerifiedOAuthAuthInfo(provider, authInfo, canonicalResource);
     },
+  };
+}
+
+/**
+ * @internal Validate and map auth information returned by a provider-owned
+ * admission hook. The bearer must correspond to the admitted auth record.
+ */
+export async function mapAdmittedOAuthAuthInfo<TUser>(
+  provider: OAuthProvider<TUser, OAuthMetadataSource>,
+  admission: { bearer: string; authInfo: AuthInfo },
+  expectedResource: URL
+): Promise<AuthInfo> {
+  if (
+    typeof admission.bearer !== "string" ||
+    admission.bearer.length === 0 ||
+    admission.authInfo?.token !== admission.bearer
+  ) {
+    throw invalidToken(
+      "Admission bearer must match the returned authentication information"
+    );
+  }
+  return mapVerifiedOAuthAuthInfo(
+    provider,
+    admission.authInfo,
+    normalizeResourceUrl(expectedResource)
+  );
+}
+
+async function mapVerifiedOAuthAuthInfo<TUser>(
+  provider: OAuthProvider<TUser, OAuthMetadataSource>,
+  authInfo: AuthInfo,
+  expectedResource: URL
+): Promise<AuthInfo> {
+  assertVerifiedAuthInfo(authInfo);
+  assertResourceBinding(authInfo, expectedResource);
+
+  let mapped: OAuthExtra<TUser>;
+  try {
+    mapped = provider.mapAuthInfo(authInfo);
+  } catch (error) {
+    throw invalidToken("Token identity mapping failed", error);
+  }
+  assertMappedExtra(mapped);
+
+  return {
+    ...authInfo,
+    scopes: [...authInfo.scopes],
+    extra: { ...authInfo.extra, ...mapped },
   };
 }
 

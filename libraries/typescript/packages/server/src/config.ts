@@ -257,7 +257,8 @@ function isOAuthProviderLike(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const provider = value as Record<string, unknown>;
   return (
-    typeof provider["createTokenVerifier"] === "function" &&
+    (typeof provider["createTokenVerifier"] === "function" ||
+      typeof provider["admit"] === "function") &&
     typeof provider["mapAuthInfo"] === "function" &&
     ((typeof provider["oauthMetadata"] === "object" &&
       provider["oauthMetadata"] !== null) ||

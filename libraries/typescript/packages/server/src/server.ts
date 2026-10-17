@@ -98,6 +98,7 @@ import {
   getOAuthProviderOptions,
   resolveConfiguredOAuthResource,
   resolveLocalOAuthResource,
+  mapAdmittedOAuthAuthInfo,
   wrapOAuthTokenVerifier,
 } from "./oauth/internal.js";
 import type {
@@ -1788,8 +1789,19 @@ export class MCPServer<TUser = never, TEnv extends Env = Env> {
         const provider = this.#config.oauth!;
         const providerOptions = getOAuthProviderOptions(provider);
         const mixedAuth = this.#config.mixedAuth === true;
+        const admission = provider.admit;
         const gateOptions: OAuthGateOptions = {
-          verifier: wrapOAuthTokenVerifier(provider, resource),
+          ...(admission === undefined
+            ? { verifier: wrapOAuthTokenVerifier(provider, resource) }
+            : {
+                admit: async (request, messages) => {
+                  const result = await admission(request, messages);
+                  if (result === undefined || result instanceof Response) {
+                    return result;
+                  }
+                  return mapAdmittedOAuthAuthInfo(provider, result, resource);
+                },
+              }),
           resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resource),
           baselineScopes: providerOptions.requiredScopes ?? [],
           mixedAuth,
