@@ -389,7 +389,7 @@ export function oauthCustomProvider<
     );
   }
 
-  const provider: OAuthProvider<TUser, TMetadata> = {
+  const provider = {
     ...(options.createTokenVerifier !== undefined && {
       createTokenVerifier: options.createTokenVerifier,
     }),
@@ -410,7 +410,7 @@ export function oauthCustomProvider<
     ...(options.serviceDocumentationUrl !== undefined && {
       serviceDocumentationUrl: options.serviceDocumentationUrl,
     }),
-  };
+  } as OAuthProvider<TUser, TMetadata>;
   return provider;
 }
 
